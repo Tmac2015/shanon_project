@@ -1,0 +1,64 @@
+---
+name: taxonomy-governance（分类体系治理 · 各 Skill 共用）
+description: 飞书功能模块表与 VOC 词典的分阶段只读/建议/批准规则；所有涉及 feature-catalog / voc-tag-reference 的 Skill 须遵守。
+---
+
+# 分类体系治理（Taxonomy Governance）
+
+## 数据源分工
+
+| 层级 | 文件 | 谁维护 | Skill 怎么用 |
+|------|------|--------|-------------|
+| 飞书源表 | 功能模块表、VOC 词典表 | 设计师 / 体验（人工） | **不直连**；经 `sync_feishu_references.py` 同步 |
+| 正式缓存 | `feature-catalog.csv`、`voc-tag-reference.csv`、`functional-metric-library.csv` | 同步脚本 | 运行时 **只读 `status=active`** |
+| 自动映射 | `voc-to-deebot-l1-l2-mapping-from-confirmed.csv` | 脚本自动生成 | 优先用功能模块表「具体监测指标」命中 VOC 三级标签 |
+| 待审核建议 | `reference-taxonomy-proposals.csv` | AI 提议 + 设计师批准 | **不得**自动写回飞书 |
+
+## 分阶段规则（领导口径）
+
+### A. 入需求池前（N1 / 反馈优化分析（N2a） / 增量机会发现（N2b） / N3）— 只读匹配
+
+- 只读 `active` 的功能模块、VOC 标签、自动映射表。
+- **可以**：把反馈/草案归到已有功能域、模块、VOC 标签。
+- **不可以**：新增/修改飞书功能模块表、VOC 词典表；不可以把 `draft` 建议当作正式分类写入需求池归档结果。
+- 匹配不到时：
+  - 归档字段填 `unassigned` / `待归属`
+  - 在 `备注` / `taxonomy_gap_note` 说明原因
+  - **不输出**正式 taxonomy 新增（仅标记缺口，留待 需求规格拆解（N4）/N5）
+
+### B. 需求场景分析 / 指标分析（N4 / N5）— 可提建议
+
+- 当场景拆解或指标分析发现现有分类不够用时，可输出 **`reference-taxonomy-proposals.csv`** 建议行：
+  - `new_feature_module`：建议新增一级/二级功能
+  - `new_voc_tag`：建议新增 VOC 三级标签
+  - `new_metric_row`：建议功能模块表新增监测指标行
+  - `voc_mapping_gap`：建议补充 VOC→功能映射（如在功能模块表增加 VOC 类型监测指标行）
+- 建议状态：`pending` → 设计师 `approved` / `rejected`
+- **仅 `approved` 后**：设计师人工写回飞书源表（`status=active`），再执行同步。
+
+### C. 飞书源表状态
+
+| 状态 | 含义 |
+|------|------|
+| `active` | 已确认；Skill 可正式使用 |
+| `draft` | 人工维护中的草案；Skill **不读取** |
+| `deprecated` | 废弃；同步时跳过 |
+
+## VOC → 功能模块映射优先级（自动生成）
+
+同一产品线下：
+
+1. VOC 三级标签 **精确匹配** 功能模块表 `具体监测指标`（或 `voc_tag_l3`）→ 归到该行 `一级模块-二级功能`
+2. 三级/二级标签与模块同名、alias、语义兜底
+3. 仍无法判断 → `voc_mapping_gap` 建议 + `pending` 映射
+
+## 评审闭环
+
+```
+AI 建议 (reference-taxonomy-proposals.csv, pending)
+    → 设计师批准 (approved)
+    → 人工更新飞书功能模块表 / VOC 词典表
+    → sync_feishu_references.py
+    → 本地 active 缓存更新
+    → 后续 Skill 可使用新分类
+```

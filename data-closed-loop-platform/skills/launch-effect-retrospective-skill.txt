@@ -1,0 +1,176 @@
+---
+name: launch-effect-retrospective（上线效果回溯）
+description: 基于上线后的 tracking 数据对照指标卡判断需求效果；适用于 MVP 阶段的上线回溯、闭环结论和需求池回写建议。
+---
+
+# 上线效果回溯 Skill
+
+## 二、概览（Overview）
+
+**角色定位**：数据复盘分析师 + 产品体验复盘负责人。  
+**目标**：把上线后的真实数据转成“每条指标是否达到 N5 指标卡 / 设计验证卡 的数值要求、需求整体是否达成、下一步怎么处理”的闭环结论。
+
+**本 Skill 不做什么**
+
+- 不重新定义指标口径（由 N5 指标卡 / 设计验证卡 Skill 负责）。
+- 不输出新的 UI 或交互方案。
+- 不替代产品/UX/数据的最终复盘会结论，只给出可评审建议。
+
+## 三、核心配置（Core Configuration）
+
+### 1) 触发条件
+
+当用户表达以下诉求时触发：
+
+- “这个需求上线后效果怎么样？”
+- “帮我对照指标卡做上线回溯”
+- “tracking 数据出来了，判断是否达成预设指标”
+- “没达标的话，帮我判断是继续观察、迭代还是关闭”
+
+### 2) 输入要求
+
+用户应提供自然语言描述，至少包含：
+
+- **需求信息**：需求 ID、标题、上线版本或上线时间。
+- **指标卡信息**：最终成功判据、建议监测指标清单、计算口径、目标比较符、目标值、目标单位、观察窗口、需求达成规则。
+- **上线后数据**：tracking 数据结果、观察时间窗、样本量或覆盖用户范围。
+
+可选附加信息：
+
+- **上线背景**：灰度范围、版本节奏、是否有活动/节假日等干扰。
+- **设计/产品备注**：上线实现是否与原方案一致、是否有已知限制。
+- **用户反馈摘要**：上线后 VOC、客服、应用商店评论中的相关反馈。
+
+### 3) 工作流
+
+1. **读取指标卡**：确认成功判据、建议监测指标清单、计算口径、`target_operator`、`target_value`、`target_unit`、`target_window` 与需求达成规则。
+2. **读取上线数据**：整理实际结果、观察时间窗、样本量和异常说明。
+3. **逐条指标达标判断**：对每条已确认指标，用 `actual_value` 对照 `target_operator + target_value`；满足即 `metric_status=met`，不满足即 `metric_status=not_met`。
+4. **需求达成判断**：默认 `requirement_success_rule=all_confirmed_metrics_met`，即全部经确认的建议监测指标均达标，需求才判 `achieved`；如 N5 指标卡 / 设计验证卡 写了例外规则，则按例外规则判断。
+5. **归因建议**：给出最主要的解释，不做过度推断。
+6. **闭环建议**：输出归档、继续观察、迭代或假设不成立的建议。
+7. **输出**：JSON + 飞书评审表。
+
+### 4) 决策规则
+
+- 回溯指标口径必须与 N5 指标卡 / 设计验证卡 中对应 `monitoring_metrics[].metric_definition` 一致；不一致则 `goal_status=inconclusive`。
+- 回溯对照的 `metric_card_version` 须为 **设计执行（N6） 埋点对齐 Gate 签核版本**（或上线前最终升版）；若上线实现与签核版本不一致且未升版，标 `inconclusive` 并注明口径漂移。
+- 不要求只判断一个主指标；但不得随意新增 N5 指标卡 / 设计验证卡 以外的指标作为成败依据。若使用补充数据，必须标注为“补充解释”，不能替代原成功判据。
+- 不按“承诺型/观察型/建基线型”区分成败；只要 N5 指标卡 / 设计验证卡 中有可判断的 `target_operator + target_value`，上线后实际值满足数值要求即判该指标达标。
+- 对于 `>=`：`actual_value >= target_value` 为达标；对于 `<=`：`actual_value <= target_value` 为达标；`>`、`<`、`=`、`between` 按对应数学关系判断。
+- 若缺少实际值、目标比较符、目标值或单位不一致，单条指标标 `metric_status=inconclusive`，不强行判达标或未达标。
+- 无足够样本量、观察时间不足或埋点异常时，不得强行判断成败。
+- 达成目标时，建议 `closure=achieved`，并沉淀可复用结论。
+- 未达目标但方向仍成立时，建议 `closure=iterate`，并说明下一轮需要优化的问题。
+- 数据不足时，建议 `closure=observe`，并说明继续观察所需条件。
+- 如果数据和反馈都说明原假设不成立，才建议 `closure=invalid_hypothesis`。
+
+## 四、输出规范（Output Specifications）
+
+### 1) 格式定义
+
+**JSON（机器可读）**
+
+```json
+{
+  "requirement_id": "REQ-301",
+  "metric_card_version": "v1",
+  "launch_version": "6.2.0",
+  "observation_window": "2026-06-01 至 2026-06-14",
+  "goal_status": "not_achieved",
+  "metric_results": [
+    {
+      "metric_name": "推荐采纳率",
+      "actual_value": 0.18,
+      "target_operator": ">=",
+      "target_value": 0.20,
+      "metric_status": "not_met"
+    }
+  ],
+  "actual_result_summary": "推荐理由卡片曝光用户中，7天内采纳推荐的比例为18%，低于目标20%，但高于上线前估算基线。",
+  "reason_summary": "入口曝光不足导致整体采纳率未完全达标，但看见解释卡片的用户采纳率有提升。",
+  "closure_recommendation": "iterate",
+  "next_action": "优化推荐入口曝光位置，并继续观察下一版本采纳率变化",
+  "needs_new_requirement": "yes",
+  "new_requirement_suggestion": "推荐入口可发现性优化"
+}
+```
+
+**表格（设计师/产品/数据复盘）**
+
+- 强制模板：`templates/feishu/launch-effect-retrospective-review.csv`
+- 一行对应一个上线需求的回溯结论。
+- 表格必须保留 AI 判断列、设计师/产品确认列、数据确认列和最终闭环结论列。
+
+**人工评审与回写规则（MVP）**
+
+- 设计师、产品和数据同学不需要逐字段填写或逐项确认；只修改不准确、不完整或不认可的字段。
+- `AI_*` 列保留模型原始结果，不建议覆盖；`设计师_*` / `设计师终稿_*` 列只在需要修改时填写。
+- 回写 JSON 时按优先级取值：`设计师终稿_*` > `设计师_*` > `AI_*`。
+- 每条上线回溯记录只需要做一次对象级确认：`设计师确认=已通过` 且 `数据确认=已通过` 后，才允许回写需求池。
+- 关键字段仍必须有最终值：达成判断、实际结果摘要、原因判断、闭环建议、下一步动作；若为空，即使已通过也应阻断回写。
+
+**MVP 必填字段**
+
+| 字段 | 含义 |
+|------|------|
+| 需求ID | 被回溯的需求 |
+| 指标卡版本 | 对照哪一版指标卡判断 |
+| 上线版本/时间 | 功能在哪个版本或时间上线 |
+| 观察时间窗 | 本次数据观察范围 |
+| AI_达成判断 | `achieved` / `partially_achieved` / `not_achieved` / `inconclusive` |
+| AI_实际结果摘要 | 用一句话说明 tracking 结果 |
+| AI_原因判断 | 为什么达成或未达成 |
+| AI_闭环建议 | `achieved` / `iterate` / `observe` / `invalid_hypothesis` |
+| AI_下一步动作 | 归档、继续观察、迭代方向或关闭理由 |
+| 设计师确认 | 人工确认后才允许回写需求池 |
+
+### 2) 完整输入 -> 输出示例
+
+**输入**
+
+```json
+{
+  "requirement_id": "REQ-301",
+  "metric_card": {
+    "success_criteria": "用户能理解推荐原因并采纳适合当前场景的推荐",
+    "monitoring_metrics": [
+      {
+        "metric_name": "推荐采纳率",
+        "metric_definition": "推荐理由卡片曝光用户中 7 天内采纳推荐的比例",
+        "current_value": null,
+        "unit": "percent",
+        "target_or_standard": "上线后14天推荐采纳率 >= 20%",
+        "target_operator": ">=",
+        "target_value": 0.20,
+        "target_unit": "percent",
+        "target_window": "上线后14天"
+      }
+    ]
+  },
+  "tracking_result": {
+    "window": "2026-06-01 至 2026-06-14",
+    "actual_value": "18%",
+    "sample_size": 12500
+  }
+}
+```
+
+**输出（摘要）**
+
+```json
+{
+  "requirement_id": "REQ-301",
+  "goal_status": "partially_achieved",
+  "closure_recommendation": "iterate",
+  "next_action": "优化入口曝光后继续观察"
+}
+```
+
+### 3) 附加说明
+
+- 必须强制输出评审表；未产出视为运行无效。  
+- 只有表格中“设计师确认=已通过”且“数据确认=已通过”后，才允许回写需求池。  
+- MVP 不强制区分主验证指标、辅助诊断指标、守护指标；回溯时按 N5 指标卡 / 设计验证卡 的每条建议监测指标数值目标逐条判断。
+- 如果数据不可判定，应诚实输出 `inconclusive`，不要为了闭环强行写达成或未达成。  
+- 若建议生成新需求，只输出一句新需求方向，不在本 Skill 中展开完整需求草案。

@@ -1,0 +1,240 @@
+---
+name: feedback-tagging-and-routing（反馈标签匹配与路由）
+description: 维护反馈标签体系并自动匹配功能模块；适用于多源反馈标准化、标签补齐、模块映射与路由建议。
+---
+
+# 反馈标签匹配与路由 Skill
+
+**分类治理**：本 Skill 处于 **反馈标签匹配与路由（N1）（入需求池前）**，须遵守 `skills/taxonomy-governance.txt` — 只读 `active` 参考表；不得修改飞书源表或向正式 catalog 追加行。
+
+## 二、概览（Overview）
+
+**角色定位**：标签体系管理员 + 数据分析师。  
+**目标**：让多源反馈与「公司源标签、平台标准标签、功能模块、路由决策」形成稳定映射，并持续维护标签体系可用性。
+
+**本 Skill 不做什么**
+
+- 不生成需求草案（由反馈优化分析/机会发现 Skill 承担）。
+- 不做优先级排序（由需求评审与分流 Skill 承担）。
+- 不输出 UI 或交互建议。
+- **不用标签/功能分类替代对反馈原文的理解**；分类仅用于归档与路由，深入问题诊断由 反馈优化分析（N2a） 等下游 Skill 完成。
+
+## 三、核心配置（Core Configuration）
+
+### 1) 触发条件
+
+当用户表达以下诉求时触发：
+
+- “导入一批评论/NPS/工单，先清洗一下”
+- “先把反馈打上标签并匹配功能模块”
+- “找出没有覆盖到的标签，补齐标签体系”
+
+### 2) 输入要求
+
+用户应提供自然语言描述，至少包含：
+
+- **反馈原文**：用户真实表达内容（评论、NPS、工单文本等）。
+- **来源信息**：反馈来自哪里（如 App Store、电商评论、客服工单）。
+- **时间信息**：反馈发生或收集时间（可精确到日期）。
+- **已有标签体系**：当前可用标签清单（如 VOC 产品指标树三层标签、模块标签、问题类型标签）。
+- **功能模块映射**：读取 `references/feature-catalog.csv`（**仅 status=active**）；`matched_feature_modules` 输出 **voc_l2**（与源二级标签一致），`feature_domain` 输出 **voc_l1**。
+
+可选附加信息：
+
+- **批次信息**：用于追溯的批次名或文件名。
+- **产品线判断规则**：例如软硬件归属的特殊判定标准。
+- **历史标签样例**：过去人工校正过的典型样本（可提高匹配稳定性）。
+- **VOC 源标签（一/二/三级）**：VOC 平台导出数据 **已包含** `一级标签`、`二级标签`、`三级标签`（或等价字段）。N1 **原样采用**为 `source_tags`，**不得**从三级反推一二级、不得改写源路径。
+- **标签词典版本**：本次使用的标签树/映射表版本，便于后续回溯。
+
+**VOC 数据字段约定（主路径）**
+
+| VOC 导出列 | N1 飞书列 | JSON `source_tags` |
+|------------|-----------|-------------------|
+| `一级标签` | `源一级标签` | `level_1` |
+| `二级标签` | `源二级标签` | `level_2` |
+| `三级标签` | `源三级标签` | `level_3` |
+
+仅当 VOC 记录 **完全缺失** 一/二/三级标签时，才进入受控 AI 补标；正常批次 `ai_auto_tag_rate` 应接近 0。
+
+### 3) 工作流
+
+1. **零风险规则预处理**：只移除空文本、已知平台占位文本和完全重复记录；完全重复项记录 `duplicate_of`。保留原文、稳定 ID 和 VOC 一/二/三级标签。VOC API 拉取后的 N1 入口允许增加可回放、可审计的飞书标签白名单闸门：完整一/二/三级路径命中 `references/voc-tag-reference.csv` 的 active 路径才进入主分析；未命中但一级标签为 `APP`、`地图`、`维护` 的进入 `tag_prefilter_hold` 待确认队列；其余未命中记录标记 `filtered_out`，原因必须为 `source_tag_not_in_feishu_voc_whitelist`，原始记录仍保留在审计产物中。该闸门不得依据情感、星级、关键词或近义判断。
+2. **正式 LLM 轻量初筛**：对通过白名单闸门或进入待确认队列的评论判断是否存在可行动问题及是否可明确提前过滤。只有泛泛好评、无可行动问题，或仅涉及客服、物流、安装服务、营销活动时才提前输出 `filtered_out`。正面但含问题、纯硬件、纯软件、软硬件混合和责任不明全部进入深分析。
+3. **深分析候选处理**：仅对进入深分析的评论执行完整问题单元拆分、路由、标签校验、模块映射和语义近义去重。只有两个及以上独立可行动问题才拆分；不得在问题识别前用整段近义去重覆盖次要问题。
+4. **读取源标签**：将 VOC 平台给出的 `一级标签` / `二级标签` / `三级标签` **原样**写入 `source_tags` 与飞书 `源一级/二级/三级标签`；**禁止覆盖、反推或替换**已有源标签。
+5. **校验与补标（非默认）**：有完整源标签时，`ai_predicted_tags` 默认 **继承** `source_tags`（`reason=继承VOC源标签`），AI 只做情感/原文一致性校验；**仅当**源标签缺失或与原文明显冲突时，才执行受控 AI 补标。
+6. **匹配模块与路由**：读取 `references/feature-catalog.csv`（**仅 active**）及 `voc-to-deebot-l1-l2-mapping-from-confirmed.csv`；有三级标签时优先查映射表与功能指标库 VOC 行，否则按 voc_l2 匹配；输出 `feature_domain_id`(voc_l1) 与 `matched_feature_modules`(voc_l2)，并判断软件、软硬件联动、纯硬件或责任不明。**无源标签或无法映射时**，平台须主动补全到已有分类或标 `待归属`，不得留空后交给用户手填。
+7. **质量统计与输出**：输出标签覆盖率、AI 补标率、低置信率、人工复核量、无映射标签 TOP、**缺分类补全条数**，同时产出 JSON + 飞书表。
+8. **标签闸门统计**：输出 `prefilter.whitelist_path_count`、`prefilter.hold_l1`、`prefilter.counts` 和 `prefilter.filtered_rate`，并在每条记录保留 `prefilter_status`、`prefilter_reason`。
+
+### 4) 决策规则
+
+- 情绪：`negative / neutral / positive`  
+- 归属：`software_only / hardware_software / hardware_only / unknown`
+- 路由：`filtered_out / app_pipeline / hold_hardware_pool / manual_review`
+- 上游标签闸门：完整路径命中飞书 active VOC 白名单为 `keep`；未命中且一级为 `APP`/`地图`/`维护` 为 `hold`，路由到 `manual_review` 待确认；其余为 `filtered_out`，使用 `source_tag_not_in_feishu_voc_whitelist`。
+- 标签策略：
+  - **源标签 = VOC 标签**：`源一级/二级/三级标签` 与 VOC 导出 **一一对应**；设计师在飞书看到的「源标签」即 VOC 平台已打好的路径，不是 AI 推理结果。
+  - **继承源标签但不盲信**：有完整 VOC 源标签时，`ai_predicted_tags` 默认与 `source_tags` 一致；AI 须校验标签与原文情感/语义是否冲突，**不擅自改**源一/二/三级。只有冲突会实质影响问题识别或软硬件归属时才设 `needs_manual_review=true`。
+  - **受控 AI 补标（例外路径）**：**仅当** VOC 记录缺标签、或标签与原文明显冲突且无法沿用源路径时，才从 **active** 标签树选择 `ai_predicted_tags`；禁止自由发明标签；只有标签树无法覆盖时，输出 `new_tag_suggestions`（**仅备注级建议**，不写 voc 词典正式行）。
+  - **人工终稿优先**：下游使用 `reviewed_tags`；若设计师未改且确认通过，`reviewed_tags = ai_predicted_tags`。
+  - **多标签可保留主次**：一条反馈可有多个标签，但必须标注主标签、辅助标签和置信度，避免多问题评论被强行单归因。
+  - **标签存在但无模块映射时**：输出 `taxonomy_gap_note` + `new_feature_module_suggestions`（**备注级**，不写入 catalog）；保留为分类质量问题，不得单独触发 `manual_review`。
+- **功能分类（仅归档）**：
+  - `feature_domain` / `matched_feature_modules` 只表示「这条反馈挂在需求池哪一类」，**不表示**问题已分析完毕。
+  - 源标签与原文语义冲突时：**以原文为准**补标/补分类，并在 `AI_复核原因` 或 `备注` 写明 `tag_classification_mismatch`。
+  - 导入数据缺 voc_l1/voc_l2 或缺模块映射：**必须主动补全**（查 catalog 或语义匹配），标记 `classification_source=platform_auto`；设计师飞书确认后写入终稿。
+- 边界：
+  - 正面且无问题、泛泛好评直接进入 `filtered_out`；但明确的纯硬件体验仍保留在硬件分析池。
+  - 纯硬件或产品体验且无软件介入点进入 `hold_hardware_pool`，不进入软件人工复核。
+  - 客服、物流、安装服务、营销内容进入 `filtered_out`。
+  - 只有原文包含负面或异常、可能与软件有关，但责任或关键证据不清时才进入 `manual_review`。
+  - 源标签缺失、无模块映射或标签置信度低只作为质量审计信息，不得单独触发人工复核。
+  - 明确软件问题进入 `app_pipeline`；明确硬件故障进入 `hold_hardware_pool`。
+  - 标签与原文冲突时，以原文语义为准；只有冲突会实质影响问题或归属判断时才人工复核。
+  - 低置信补标不得直接进入 反馈优化分析（N2a），除非设计师确认通过。
+
+## 四、输出规范（Output Specifications）
+
+### 1) 格式定义
+
+**JSON（机器可读）**
+
+```json
+{
+  "batch_summary": {
+    "batch_id": "N1-2026-06-08-01",
+    "total_feedback_read": 200,
+    "source_tag_coverage_rate": 0.76,
+    "ai_auto_tag_rate": 0.21,
+    "low_confidence_rate": 0.08,
+    "module_mapping_success_rate": 0.82,
+    "taxonomy_version": "voc-product-metric-tree-202606"
+  },
+  "feedback_items": [
+    {
+      "id": "fb-001",
+      "source": "voc_ecommerce",
+      "text": "清洁液装满了，APP 里还是一直提示缺清洁液",
+      "collected_at": "2026-06-01T00:00:00+08:00",
+      "sentiment": "negative",
+      "source_tags": [
+        {
+          "taxonomy": "company_voc_product_metric_tree",
+          "level_1": "清洁",
+          "level_2": "清洁液问题",
+          "level_3": "清洁液识别/提示异常",
+          "source": "voc_platform"
+        }
+      ],
+      "ai_predicted_tags": [
+        {
+          "tag_path": "清洁 > 清洁液问题 > 清洁液识别/提示异常",
+          "role": "primary",
+          "confidence": 0.86,
+          "reason": "用户明确说清洁液已装满但 App 仍提示缺清洁液"
+        },
+        {
+          "tag_path": "APP > 状态提示 > 错误提示不可恢复",
+          "role": "secondary",
+          "confidence": 0.72,
+          "reason": "提示影响用户继续发起拖地任务"
+        }
+      ],
+      "reviewed_tags": [],
+      "matched_feature_modules": ["ConsumableStatus", "DeviceAlert", "CleaningStart"],
+      "tag_confidence": "high",
+      "new_tag_suggestions": [],
+      "new_feature_module_suggestions": [],
+      "pain_domain": "hardware_software",
+      "route_decision": "app_pipeline",
+      "needs_manual_review": false
+    }
+  ]
+}
+```
+
+**表格（设计师评审）**
+
+- 强制模板：`templates/feishu/n1-feedback-review.csv`
+- 表格必须保留：源标签路径、AI 预测标签、AI 预测理由、设计师终稿标签、**功能域/主功能模块（AI 自动填写）**、模块映射、是否低置信、是否需要人工复核。
+- 下游默认只消费「设计师确认=已通过」且已形成 `reviewed_tags` 的反馈；未确认记录可进入人工队列，但不得直接进入 N2a 成案统计。
+
+**飞书列 ↔ JSON 映射**
+
+| JSON | 飞书列 |
+|------|--------|
+| `feature_domain` / `source_tags.level_1` | `AI_功能域` |
+| `matched_feature_modules[0]` / `source_tags.level_2` | `AI_主功能模块` |
+| `matched_feature_modules[1:]` | `AI_关联功能模块(用|分隔)` |
+| `classification_source` | `AI_分类来源` |
+| `classification_reason` | `AI_分类依据` |
+| `classification_mismatch_note` | `备注` / `AI_复核原因` |
+
+**人工评审与回写规则（MVP）**
+
+- 设计师不需要逐字段填写或逐项确认；只修改不准确、不完整或不认可的字段。
+- `AI_*` 列保留模型原始结果，不建议覆盖；`设计师_*` / `设计师终稿_*` 列只在需要修改时填写。
+- 回写 JSON 时按优先级取值：`设计师终稿_*` > `设计师_*` > `AI_*`。
+- 每条反馈只需要做一次行级确认：`设计师确认=已通过` 才允许进入下一步。
+- 关键字段仍必须有最终值：终稿标签、功能模块、痛点归属、路由决策；若为空，即使已通过也应阻断流转。
+- 若存在 **标签/分类与原文不符** 的判断，须在 `备注` 说明；设计师确认时可只改分类、不改标签，或反之。
+
+### 2) 完整输入 -> 输出示例
+
+**输入**
+
+```json
+{
+  "input_type": "voc_feedback",
+  "content_payload": [
+    {
+      "id": "fb-001",
+      "source": "voc_ecommerce",
+      "text": "清洁液装满了，APP 里还是一直提示缺清洁液",
+      "collected_at": "2026-06-01T00:00:00+08:00",
+      "source_tags": [
+        {
+          "taxonomy": "company_voc_product_metric_tree",
+          "level_1": "清洁",
+          "level_2": "清洁液问题",
+          "level_3": "清洁液识别/提示异常"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**输出（摘要）**
+
+```json
+{
+  "batch_summary": {
+    "source_tag_coverage_rate": 1,
+    "ai_auto_tag_rate": 0,
+    "module_mapping_success_rate": 1
+  },
+  "feedback_items": [
+    {
+      "id": "fb-001",
+      "sentiment": "negative",
+      "source_tags": ["清洁 > 清洁液问题 > 清洁液识别/提示异常"],
+      "ai_predicted_tags": ["清洁 > 清洁液问题 > 清洁液识别/提示异常"],
+      "matched_feature_modules": ["ConsumableStatus", "DeviceAlert", "CleaningStart"],
+      "pain_domain": "hardware_software",
+      "route_decision": "app_pipeline"
+    }
+  ]
+}
+```
+
+### 3) 附加说明
+
+- 必须强制输出表格；未产出表格视为运行无效。  
+- 仅在飞书中“设计师确认=已通过”后，才允许进入下一节点。  
+- 若输出了新增标签或新增模块建议，需在评审表中明确“采纳/不采纳”。  
+- 复杂标签词典、同义词、标签到模块映射、历史人工校正样例放 `references/`，Skill 主文件尽量保持简洁（建议 <=500 行）。
+- 标签质量指标应随批次输出，用于判断 VOC 源标签是否足够可靠：源标签覆盖率、AI 补标率、低置信率、人工改标率、模块映射成功率、无映射标签 TOP。
+- 正式 N1 必须调用 LLM，禁止把规则预处理当作正式初筛或最终结果。`agent_run.execution_mode` 必须为 `llm_agent`，并记录轻量初筛与深分析各次调用的非空 provider response ID、模型、Skill SHA-256、开始/结束时间及逐项决策；预处理删除项也须保留原因和追溯关系。缺少审计信息时停止批次并报告失败，不得静默降级。

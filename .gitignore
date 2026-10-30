@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.py[cod]
+data-closed-loop-platform/.runtime-scripts/
+data-closed-loop-platform/.runtime/
+data-closed-loop-platform/test-runs/.n1-agent-cache/
+data-closed-loop-platform/test-runs/.skill-agent-cache/
